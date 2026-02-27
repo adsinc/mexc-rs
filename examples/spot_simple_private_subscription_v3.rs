@@ -1,10 +1,9 @@
 use dotenv::dotenv;
 use futures::StreamExt;
 use mexc_rs::spot::ws::auth::WebsocketAuth;
-use mexc_rs::spot::ws::message::kline::KlineIntervalTopic;
 use mexc_rs::spot::ws::stream::Stream;
 use mexc_rs::spot::ws::subscribe::{Subscribe, SubscribeParams};
-use mexc_rs::spot::ws::topic::{DealsTopic, KlineTopic, Topic};
+use mexc_rs::spot::ws::topic::Topic;
 use mexc_rs::spot::ws::MexcSpotWebsocketClient;
 
 #[tokio::main]
@@ -31,15 +30,6 @@ async fn main() {
                     Topic::AccountUpdate,
                     Topic::AccountOrders,
                     Topic::AccountDeals,
-                    Topic::Kline(KlineTopic::new(
-                        "BTCUSDT".to_string(),
-                        KlineIntervalTopic::OneMinute,
-                    )),
-                    Topic::Kline(KlineTopic::new(
-                        "KASUSDT".to_string(),
-                        KlineIntervalTopic::OneMinute,
-                    )),
-                    Topic::Deals(DealsTopic::new("KASUSDT".to_string())),
                 ]),
         )
         .await

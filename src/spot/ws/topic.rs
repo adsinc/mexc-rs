@@ -24,9 +24,9 @@ impl Topic {
 
     pub fn to_topic_subscription_string(&self) -> String {
         match self {
-            Topic::AccountDeals => "spot@private.deals.v3.api".to_string(),
-            Topic::AccountOrders => "spot@private.orders.v3.api".to_string(),
-            Topic::AccountUpdate => "spot@private.account.v3.api".to_string(),
+            Topic::AccountDeals => "spot@private.deals.v3.api.pb".to_string(),
+            Topic::AccountOrders => "spot@private.orders.v3.api.pb".to_string(),
+            Topic::AccountUpdate => "spot@private.account.v3.api.pb".to_string(),
             Topic::Deals(deals_topic) => format!(
                 "spot@public.deals.v3.api@{symbol}",
                 symbol = deals_topic.symbol
