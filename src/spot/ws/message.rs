@@ -2,7 +2,11 @@ use self::orderbook_update::{
     channel_message_to_spot_orderbook_update_message, OrderbookUpdateMessage, RawOrderData,
 };
 use crate::proto::push_data_v3_api_wrapper::Body::PublicAggreDepths;
-use crate::proto::{PublicAggreDepthsV3Api, PushDataV3ApiWrapper};
+use crate::proto::push_data_v3_api_wrapper::Body::{PrivateAccount, PrivateDeals, PrivateOrders};
+use crate::proto::{
+    PrivateAccountV3Api, PrivateDealsV3Api, PrivateOrdersV3Api, PublicAggreDepthsV3Api,
+    PushDataV3ApiWrapper,
+};
 use crate::spot::ws::message::account_deals::{
     channel_message_to_account_deals_message, AccountDealsMessage, RawAccountDealsData,
 };
@@ -38,6 +42,9 @@ pub enum Message {
     Kline(SpotKlineMessage),
     OrderbookUpdate(OrderbookUpdateMessage),
     PublicAggreDepthsV3Api(PublicAggreDepthsV3Api),
+    PrivateOrdersV3Api(PrivateOrdersV3Api),
+    PrivateDealsV3Api(PrivateDealsV3Api),
+    PrivateAccountV3Api(PrivateAccountV3Api),
 }
 
 impl Message {
@@ -48,6 +55,9 @@ impl Message {
         };
         match body {
             PublicAggreDepths(depth) => Ok(Message::PublicAggreDepthsV3Api(depth)),
+            PrivateOrders(orders) => Ok(Message::PrivateOrdersV3Api(orders)),
+            PrivateDeals(deals) => Ok(Message::PrivateDealsV3Api(deals)),
+            PrivateAccount(account) => Ok(Message::PrivateAccountV3Api(account)),
             _ => Err(()),
         }
     }
