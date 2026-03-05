@@ -1,12 +1,7 @@
 use self::orderbook_update::{
     channel_message_to_spot_orderbook_update_message, OrderbookUpdateMessage, RawOrderData,
 };
-use crate::proto::push_data_v3_api_wrapper::Body::PublicAggreDepths;
-use crate::proto::push_data_v3_api_wrapper::Body::{PrivateAccount, PrivateDeals, PrivateOrders};
-use crate::proto::{
-    PrivateAccountV3Api, PrivateDealsV3Api, PrivateOrdersV3Api, PublicAggreDepthsV3Api,
-    PushDataV3ApiWrapper,
-};
+use crate::proto::PushDataV3ApiWrapper;
 use crate::spot::ws::message::account_deals::{
     channel_message_to_account_deals_message, AccountDealsMessage, RawAccountDealsData,
 };
@@ -41,25 +36,13 @@ pub enum Message {
     Deals(SpotDealsMessage),
     Kline(SpotKlineMessage),
     OrderbookUpdate(OrderbookUpdateMessage),
-    PublicAggreDepthsV3Api(PublicAggreDepthsV3Api),
-    PrivateOrdersV3Api(PrivateOrdersV3Api),
-    PrivateDealsV3Api(PrivateDealsV3Api),
-    PrivateAccountV3Api(PrivateAccountV3Api),
+    ProtoMessage(PushDataV3ApiWrapper),
 }
 
 impl Message {
     pub fn from_proto(data: &[u8]) -> Result<Message, ()> {
         let wrapper = PushDataV3ApiWrapper::decode(data).or_else(|_| Err(()))?;
-        let Some(body) = wrapper.body else {
-            return Err(());
-        };
-        match body {
-            PublicAggreDepths(depth) => Ok(Message::PublicAggreDepthsV3Api(depth)),
-            PrivateOrders(orders) => Ok(Message::PrivateOrdersV3Api(orders)),
-            PrivateDeals(deals) => Ok(Message::PrivateDealsV3Api(deals)),
-            PrivateAccount(account) => Ok(Message::PrivateAccountV3Api(account)),
-            _ => Err(()),
-        }
+        Ok(Message::ProtoMessage(wrapper))
     }
 }
 
