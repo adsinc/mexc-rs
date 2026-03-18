@@ -36,13 +36,13 @@ pub enum Message {
     Deals(SpotDealsMessage),
     Kline(SpotKlineMessage),
     OrderbookUpdate(OrderbookUpdateMessage),
-    ProtoMessage(PushDataV3ApiWrapper),
+    ProtoMessage(Box<PushDataV3ApiWrapper>),
 }
 
 impl Message {
     pub fn from_proto(data: &[u8]) -> Result<Message, ()> {
         let wrapper = PushDataV3ApiWrapper::decode(data).or_else(|_| Err(()))?;
-        Ok(Message::ProtoMessage(wrapper))
+        Ok(Message::ProtoMessage(Box::new(wrapper)))
     }
 }
 

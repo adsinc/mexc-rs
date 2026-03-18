@@ -11,6 +11,7 @@ use async_channel::Sender;
 use async_trait::async_trait;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
+use std::io::ErrorKind;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
@@ -776,6 +777,14 @@ fn spawn_websocket_receiver_task(
                                     break;
                                 }
                             },
+                            Error::Io(io_err) if io_err.kind() == ErrorKind::ConnectionReset => {
+                                cancellation_token.cancel();
+                                tracing::error!("Failed to receive message from websocket because the connection was reset by peer");
+                                if let Err(err) = reconnect_websocket(this.clone(), websocket_id).await {
+                                    tracing::error!("Failed to reconnect websocket: {}", err);
+                                }
+                                break;
+                            }
                             _ => {
                                 cancellation_token.cancel();
                                 tracing::error!("Error receiving message from websocket: {}", err);
