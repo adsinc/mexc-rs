@@ -37,6 +37,7 @@ pub struct MexcSpotWebsocketClient {
     ws_endpoint: Arc<MexcWebsocketEndpoint>,
     spot_api_endpoint: Arc<MexcSpotApiEndpoint>,
     broadcast_tx: tokio::sync::broadcast::Sender<Arc<message::Message>>,
+    lifecycle_broadcast_tx: tokio::sync::broadcast::Sender<stream::WebsocketStreamEvent>,
 }
 
 impl MexcSpotWebsocketClient {
@@ -45,6 +46,8 @@ impl MexcSpotWebsocketClient {
         spot_api_endpoint: MexcSpotApiEndpoint,
     ) -> Self {
         let (broadcast_tx, _broadcast_rx) = tokio::sync::broadcast::channel(1024);
+        let (lifecycle_broadcast_tx, _lifecycle_broadcast_rx) =
+            tokio::sync::broadcast::channel(1024);
 
         Self {
             inner: Arc::new(RwLock::new(Inner {
@@ -54,6 +57,7 @@ impl MexcSpotWebsocketClient {
             ws_endpoint: Arc::new(ws_endpoint),
             spot_api_endpoint: Arc::new(spot_api_endpoint),
             broadcast_tx,
+            lifecycle_broadcast_tx,
         }
     }
 
@@ -78,4 +82,30 @@ pub enum SendableMessage {
     Subscription(Vec<String>),
     Unsubscription(Vec<String>),
     Ping,
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::StreamExt;
+
+    use super::stream::{Stream, WebsocketStreamEvent};
+    use super::*;
+
+    #[tokio::test]
+    async fn stream_with_events_receives_lifecycle_events() {
+        let client = MexcSpotWebsocketClient::default().into_arc();
+        let websocket_id = Uuid::new_v4();
+        let mut stream = client.clone().stream_with_events();
+
+        client
+            .lifecycle_broadcast_tx
+            .send(WebsocketStreamEvent::Reconnected { websocket_id })
+            .expect("lifecycle event must be sent");
+
+        let event = stream.next().await.expect("event must be received");
+        assert!(matches!(
+            event,
+            WebsocketStreamEvent::Reconnected { websocket_id: id } if id == websocket_id
+        ));
+    }
 }

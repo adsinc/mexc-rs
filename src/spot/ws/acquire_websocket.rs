@@ -4,6 +4,7 @@ use crate::spot::v3::keep_alive_user_data_stream::{
 };
 use crate::spot::v3::ApiError;
 use crate::spot::ws::auth::WebsocketAuth;
+use crate::spot::ws::stream::{WebsocketDisconnectReason, WebsocketStreamEvent};
 use crate::spot::ws::topic::Topic;
 use crate::spot::ws::{message, Inner, MexcSpotWebsocketClient, SendableMessage, WebsocketEntry};
 use crate::spot::MexcSpotApiClientWithAuthentication;
@@ -579,6 +580,7 @@ async fn reconnect_websocket(
     let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url).await?;
 
     tracing::debug!("Reconnected websocket with id: {}", websocket_id);
+    emit_lifecycle_event(&this, WebsocketStreamEvent::Reconnected { websocket_id });
 
     let (ws_tx, ws_rx) = ws_stream.split();
     let (tx, rx) = async_channel::unbounded();
@@ -639,9 +641,50 @@ async fn reconnect_websocket(
             "Resubscribed to all topics for websocket with id: {}",
             websocket_id
         );
+        emit_lifecycle_event(
+            &this,
+            WebsocketStreamEvent::Resubscribed {
+                websocket_id,
+                topics: topics.clone(),
+            },
+        );
     }
 
     Ok(())
+}
+
+async fn reconnect_websocket_until_success(this: Arc<MexcSpotWebsocketClient>, websocket_id: Uuid) {
+    let mut attempt = 1;
+    loop {
+        emit_lifecycle_event(
+            &this,
+            WebsocketStreamEvent::Reconnecting {
+                websocket_id,
+                attempt,
+            },
+        );
+        match reconnect_websocket(this.clone(), websocket_id).await {
+            Ok(()) => return,
+            Err(err) => {
+                tracing::error!("Failed to reconnect websocket: {}", err);
+                emit_lifecycle_event(
+                    &this,
+                    WebsocketStreamEvent::ReconnectFailed {
+                        websocket_id,
+                        attempt,
+                        error: err.to_string(),
+                    },
+                );
+                let delay = std::time::Duration::from_secs(2_u64.pow(attempt.min(5)));
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+        }
+    }
+}
+
+fn emit_lifecycle_event(this: &MexcSpotWebsocketClient, event: WebsocketStreamEvent) {
+    let _ = this.lifecycle_broadcast_tx.send(event);
 }
 
 fn spawn_websocket_sender_task(
@@ -675,26 +718,41 @@ fn spawn_websocket_sender_task(
                             Error::ConnectionClosed => {
                                 cancellation_token.cancel();
                                 tracing::error!("Failed to send message to websocket because the connection was closed");
-                                if let Err(err) = reconnect_websocket(this.clone(), websocket_id).await {
-                                    tracing::error!("Failed to reconnect websocket: {}", err);
-                                }
+                                emit_lifecycle_event(
+                                    &this,
+                                    WebsocketStreamEvent::Disconnected {
+                                        websocket_id,
+                                        reason: WebsocketDisconnectReason::ConnectionClosed,
+                                    },
+                                );
+                                reconnect_websocket_until_success(this.clone(), websocket_id).await;
                                 break;
                             }
                             Error::AlreadyClosed => {
                                 cancellation_token.cancel();
                                 tracing::error!("Failed to send message to websocket because the connection was already closed");
-                                if let Err(err) = reconnect_websocket(this.clone(), websocket_id).await {
-                                    tracing::error!("Failed to reconnect websocket: {}", err);
-                                }
+                                emit_lifecycle_event(
+                                    &this,
+                                    WebsocketStreamEvent::Disconnected {
+                                        websocket_id,
+                                        reason: WebsocketDisconnectReason::AlreadyClosed,
+                                    },
+                                );
+                                reconnect_websocket_until_success(this.clone(), websocket_id).await;
                                 break;
                             }
                             Error::Protocol(protocol_err) => match protocol_err {
                                 ProtocolError::ResetWithoutClosingHandshake => {
                                     cancellation_token.cancel();
                                     tracing::error!("Failed to send message to websocket because the connection was reset without closing handshake");
-                                    if let Err(err) = reconnect_websocket(this.clone(), websocket_id).await {
-                                        tracing::error!("Failed to reconnect websocket: {}", err);
-                                    }
+                                    emit_lifecycle_event(
+                                        &this,
+                                        WebsocketStreamEvent::Disconnected {
+                                            websocket_id,
+                                            reason: WebsocketDisconnectReason::ResetWithoutClosingHandshake,
+                                        },
+                                    );
+                                    reconnect_websocket_until_success(this.clone(), websocket_id).await;
                                     break;
                                 }
                                 _ => {
@@ -706,6 +764,19 @@ fn spawn_websocket_sender_task(
                                     break;
                                 }
                             },
+                            Error::Io(io_err) if io_err.kind() == ErrorKind::ConnectionReset => {
+                                cancellation_token.cancel();
+                                tracing::error!("Failed to send message to websocket because the connection was reset by peer");
+                                emit_lifecycle_event(
+                                    &this,
+                                    WebsocketStreamEvent::Disconnected {
+                                        websocket_id,
+                                        reason: WebsocketDisconnectReason::ConnectionReset,
+                                    },
+                                );
+                                reconnect_websocket_until_success(this.clone(), websocket_id).await;
+                                break;
+                            }
                             _ => {
                                 cancellation_token.cancel();
                                 tracing::error!("Error sending message to websocket: {}", err);
@@ -737,6 +808,15 @@ fn spawn_websocket_receiver_task(
                         Some(x) => x,
                         None => {
                             cancellation_token.cancel();
+                            tracing::error!("Failed to receive message from websocket because the stream ended");
+                            emit_lifecycle_event(
+                                &this,
+                                WebsocketStreamEvent::Disconnected {
+                                    websocket_id,
+                                    reason: WebsocketDisconnectReason::ConnectionClosed,
+                                },
+                            );
+                            reconnect_websocket_until_success(this.clone(), websocket_id).await;
                             break;
                         }
                     };
@@ -746,26 +826,41 @@ fn spawn_websocket_receiver_task(
                             Error::ConnectionClosed => {
                                 cancellation_token.cancel();
                                 tracing::error!("Failed to receive message from websocket because the connection was closed");
-                                if let Err(err) = reconnect_websocket(this.clone(), websocket_id).await {
-                                    tracing::error!("Failed to reconnect websocket: {}", err);
-                                }
+                                emit_lifecycle_event(
+                                    &this,
+                                    WebsocketStreamEvent::Disconnected {
+                                        websocket_id,
+                                        reason: WebsocketDisconnectReason::ConnectionClosed,
+                                    },
+                                );
+                                reconnect_websocket_until_success(this.clone(), websocket_id).await;
                                 break;
                             }
                             Error::AlreadyClosed => {
                                 cancellation_token.cancel();
                                 tracing::error!("Failed to receive message from websocket because the connection was already closed");
-                                if let Err(err) = reconnect_websocket(this.clone(), websocket_id).await {
-                                    tracing::error!("Failed to reconnect websocket: {}", err);
-                                }
+                                emit_lifecycle_event(
+                                    &this,
+                                    WebsocketStreamEvent::Disconnected {
+                                        websocket_id,
+                                        reason: WebsocketDisconnectReason::AlreadyClosed,
+                                    },
+                                );
+                                reconnect_websocket_until_success(this.clone(), websocket_id).await;
                                 break;
                             }
                             Error::Protocol(protocol_err) => match protocol_err {
                                 ProtocolError::ResetWithoutClosingHandshake => {
                                     cancellation_token.cancel();
                                     tracing::error!("Failed to receive message from websocket because the connection was reset without closing handshake");
-                                    if let Err(err) = reconnect_websocket(this.clone(), websocket_id).await {
-                                        tracing::error!("Failed to reconnect websocket: {}", err);
-                                    }
+                                    emit_lifecycle_event(
+                                        &this,
+                                        WebsocketStreamEvent::Disconnected {
+                                            websocket_id,
+                                            reason: WebsocketDisconnectReason::ResetWithoutClosingHandshake,
+                                        },
+                                    );
+                                    reconnect_websocket_until_success(this.clone(), websocket_id).await;
                                     break;
                                 }
                                 _ => {
@@ -780,9 +875,14 @@ fn spawn_websocket_receiver_task(
                             Error::Io(io_err) if io_err.kind() == ErrorKind::ConnectionReset => {
                                 cancellation_token.cancel();
                                 tracing::error!("Failed to receive message from websocket because the connection was reset by peer");
-                                if let Err(err) = reconnect_websocket(this.clone(), websocket_id).await {
-                                    tracing::error!("Failed to reconnect websocket: {}", err);
-                                }
+                                emit_lifecycle_event(
+                                    &this,
+                                    WebsocketStreamEvent::Disconnected {
+                                        websocket_id,
+                                        reason: WebsocketDisconnectReason::ConnectionReset,
+                                    },
+                                );
+                                reconnect_websocket_until_success(this.clone(), websocket_id).await;
                                 break;
                             }
                             _ => {
@@ -823,13 +923,13 @@ fn spawn_websocket_receiver_task(
                         }
                     };
 
-                     match broadcast_tx.send(Arc::new(mex_msg)) {
-                        Ok(_) => {}
-                        Err(err) => {
-                            // cancellation_token.cancel();
-                            tracing::error!("Failed to broadcast message: {}", err);
-                            break;
-                        }
+                    let mex_msg = Arc::new(mex_msg);
+                    emit_lifecycle_event(
+                        &this,
+                        WebsocketStreamEvent::Message(mex_msg.clone()),
+                    );
+                    if let Err(err) = broadcast_tx.send(mex_msg) {
+                        tracing::trace!("Failed to broadcast message: {}", err);
                     }
 
 
